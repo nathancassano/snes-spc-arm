@@ -3,7 +3,7 @@
 
 // snes_spc 0.9.0. http://www.slack.net/~ant/
 
-#include "SNES_SPC.h"
+#include "snes_spc/SNES_SPC.h"
 
 #if !SPC_NO_COPY_STATE_FUNCS
 
@@ -34,47 +34,6 @@ void SNES_SPC::save_regs( uint8_t out [reg_count] )
 	
 	// Last written values
 	memcpy( out, REGS, r_t0out );
-}
-
-void SNES_SPC::init_header( void* spc_out )
-{
-	spc_file_t* const spc = (spc_file_t*) spc_out;
-	
-	spc->has_id666 = 26; // has none
-	spc->version   = 30;
-	memcpy( spc, signature, sizeof spc->signature );
-	memset( spc->text, 0, sizeof spc->text );
-}
-
-void SNES_SPC::save_spc( void* spc_out )
-{
-	spc_file_t* const spc = (spc_file_t*) spc_out;
-	
-	// CPU
-	spc->pcl = (uint8_t) (m.cpu_regs.pc >> 0);
-	spc->pch = (uint8_t) (m.cpu_regs.pc >> 8);
-	spc->a   = m.cpu_regs.a;
-	spc->x   = m.cpu_regs.x;
-	spc->y   = m.cpu_regs.y;
-	spc->psw = m.cpu_regs.psw;
-	spc->sp  = m.cpu_regs.sp;
-	
-	// RAM, ROM
-	memcpy( spc->ram, RAM, sizeof spc->ram );
-	if ( m.rom_enabled )
-		memcpy( spc->ram + rom_addr, m.hi_ram, sizeof m.hi_ram );
-	memset( spc->unused, 0, sizeof spc->unused );
-	memcpy( spc->ipl_rom, m.rom, sizeof spc->ipl_rom );
-	
-	// SMP registers
-	save_regs( &spc->ram [0xF0] );
-	int i;
-	for ( i = 0; i < port_count; i++ )
-		spc->ram [0xF0 + r_cpuio0 + i] = REGS_IN [r_cpuio0 + i];
-	
-	// DSP registers
-	for ( i = 0; i < SPC_DSP::register_count; i++ )
-		spc->dsp [i] = dsp.read( i );
 }
 
 void SNES_SPC::copy_state( unsigned char** io, copy_func_t copy )
