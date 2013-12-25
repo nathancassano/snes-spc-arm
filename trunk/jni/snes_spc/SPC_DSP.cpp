@@ -16,8 +16,6 @@ details. You should have received a copy of the GNU Lesser General Public
 License along with this module; if not, write to the Free Software Foundation,
 Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
 
-#include "blargg_source.h"
-
 #ifdef BLARGG_ENABLE_OPTIMIZER
 	#include BLARGG_ENABLE_OPTIMIZER
 #endif
@@ -65,9 +63,6 @@ static BOOST::uint8_t const initial_regs [SPC_DSP::register_count] =
 	out += 2;\
 	if ( out >= m.out_end )\
 	{\
-		check( out == m.out_end );\
-		check( m.out_end != &m.extra [extra_size] || \
-			(m.extra <= m.out_begin && m.extra < &m.extra [extra_size]) );\
 		out       = m.extra;\
 		m.out_end = &m.extra [extra_size];\
 	}\
@@ -75,7 +70,6 @@ static BOOST::uint8_t const initial_regs [SPC_DSP::register_count] =
 
 void SPC_DSP::set_output( sample_t* out, int size )
 {
-	require( (size & 1) == 0 ); // must be even
 	if ( !out )
 	{
 		out  = m.extra;
@@ -468,7 +462,6 @@ void SPC_DSP::run( int clock_count )
 					{
 						// Next BRR block
 						int brr_addr = (v->brr_addr + brr_block_size) & 0xFFFF;
-						assert( brr_offset == brr_block_size );
 						if ( brr_header & 1 )
 						{
 							brr_addr = SAMPLE_PTR( 1 );
@@ -645,27 +638,10 @@ void SPC_DSP::init( void* ram_64k )
 	disable_surround( false );
 	set_output( 0, 0 );
 	reset();
-	
-	#ifndef NDEBUG
-		// be sure this sign-extends
-		assert( (int16_t) 0x8000 == -0x8000 );
-		
-		// be sure right shift preserves sign
-		assert( (-1 >> 1) == -1 );
-		
-		// check clamp macro
-		int i;
-		i = +0x8000; CLAMP16( i ); assert( i == +0x7FFF );
-		i = -0x8001; CLAMP16( i ); assert( i == -0x8000 );
-		
-		blargg_verify_byte_order();
-	#endif
 }
 
 void SPC_DSP::soft_reset_common()
 {
-	require( m.ram ); // init() must have been called already
-	
 	m.noise              = 0x4000;
 	m.echo_hist_pos      = m.echo_hist;
 	m.every_other_sample = 1;
@@ -701,3 +677,116 @@ void SPC_DSP::load( uint8_t const regs [register_count] )
 }
 
 void SPC_DSP::reset() { load( initial_regs ); }
+
+
+//// State save/load
+
+void SPC_State_Copier::copy( void* state, size_t size )
+{
+	func( buf, state, size );
+}
+
+int SPC_State_Copier::copy_int( int state, int size )
+{
+	BOOST::uint8_t s [2];
+	SET_LE16( s, state );
+	func( buf, &s, size );
+	return GET_LE16( s );
+}
+
+void SPC_State_Copier::skip( int count )
+{
+	if ( count > 0 )
+	{
+		char temp [64];
+		memset( temp, 0, sizeof temp );
+		do
+		{
+			int n = sizeof temp;
+			if ( n > count )
+				n = count;
+			count -= n;
+			func( buf, temp, n );
+		}
+		while ( count );
+	}
+}
+
+void SPC_State_Copier::extra()
+{
+	int n = 0;
+	SPC_State_Copier& copier = *this;
+	SPC_COPY( uint8_t, n );
+	skip( n );
+}
+
+void SPC_DSP::copy_state( unsigned char** io, copy_func_t copy )
+{
+	SPC_State_Copier copier( io, copy );
+	
+	// DSP registers
+	copier.copy( m.regs, register_count );
+	
+	// Internal state
+	
+	// Voices
+	int i;
+	for ( i = 0; i < voice_count; i++ )
+	{
+		voice_t* v = &m.voices [i];
+		
+		// BRR buffer
+		int i;
+		for ( i = 0; i < brr_buf_size; i++ )
+		{
+			int s = v->buf [i];
+			SPC_COPY(  int16_t, s );
+			v->buf [i] = v->buf [i + brr_buf_size] = s;
+		}
+		
+		SPC_COPY( uint16_t, v->interp_pos );
+		SPC_COPY( uint16_t, v->brr_addr );
+		SPC_COPY( uint16_t, v->env );
+		SPC_COPY(  int16_t, v->hidden_env );
+		//SPC_COPY(  uint8_t, v->buf_pos );
+		SPC_COPY(  uint8_t, v->brr_offset );
+		SPC_COPY(  uint8_t, v->kon_delay );
+		{
+			int m = v->env_mode;
+			SPC_COPY(  uint8_t, m );
+			v->env_mode = (enum env_mode_t) m;
+		}
+		
+		copier.extra();
+	}
+	
+	// Echo history
+	for ( i = 0; i < echo_hist_size; i++ )
+	{
+		int j;
+		for ( j = 0; j < 2; j++ )
+		{
+			int s = m.echo_hist_pos [i] [j];
+			SPC_COPY( int16_t, s );
+			m.echo_hist [i] [j] = s; // write back at offset 0
+		}
+	}
+	m.echo_hist_pos = m.echo_hist;
+	memcpy( &m.echo_hist [echo_hist_size], m.echo_hist, echo_hist_size * sizeof m.echo_hist [0] );
+	
+	// Misc
+	SPC_COPY(  uint8_t, m.every_other_sample );
+	SPC_COPY(  uint8_t, m.kon );
+	
+	SPC_COPY( uint16_t, m.noise );
+	SPC_COPY( uint16_t, m.echo_offset );
+	SPC_COPY( uint16_t, m.echo_length );
+	SPC_COPY(  uint8_t, m.phase );
+	
+	SPC_COPY(  uint8_t, m.new_kon );
+	
+	SPC_COPY(  uint8_t, m.t_koff );
+	
+	
+	copier.extra();
+}

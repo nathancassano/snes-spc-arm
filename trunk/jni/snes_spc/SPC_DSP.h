@@ -6,6 +6,8 @@
 
 #include "blargg_common.h"
 
+extern "C" { typedef void (*dsp_copy_func_t)( unsigned char** io, void* state, size_t ); }
+
 class SPC_DSP {
 public:
 	typedef BOOST::uint8_t uint8_t;
@@ -53,10 +55,17 @@ public:
 	void disable_surround( bool disable = true );
 
 // State
-	
-	// Resets DSP and uses supplied values to initialize registers
-	enum { register_count = 128 };
-	void load( uint8_t const regs [register_count] );
+        // Resets DSP and uses supplied values to initialize registers
+        enum { register_count = 128 };
+        void load( uint8_t const regs [register_count] );
+
+        // Saves/loads exact emulator state
+        enum { state_size = 640 }; // maximum space needed when saving
+        typedef dsp_copy_func_t copy_func_t;
+        void copy_state( unsigned char** io, copy_func_t );
+
+        // Returns non-zero if new key-on events occurred since last call
+        bool check_kon();
 
 // DSP register addresses
 
@@ -152,13 +161,10 @@ private:
 	void update_voice_vol( int addr );
 };
 
-#include <assert.h>
-
 inline int SPC_DSP::sample_count() const { return m.out - m.out_begin; }
 
 inline int SPC_DSP::read( int addr ) const
 {
-	assert( (unsigned) addr < register_count );
 	return m.regs [addr];
 }
 
@@ -182,7 +188,6 @@ inline void SPC_DSP::update_voice_vol( int addr )
 
 inline void SPC_DSP::write( int addr, int data )
 {
-	assert( (unsigned) addr < register_count );
 	
 	m.regs [addr] = (uint8_t) data;
 	int low = addr & 0x0F;
@@ -205,7 +210,21 @@ inline void SPC_DSP::disable_surround( bool disable )
 	m.surround_threshold = disable ? 0 : -0x4000;
 }
 
-#define SPC_NO_COPY_STATE_FUNCS 1
+class SPC_State_Copier {
+	SPC_DSP::copy_func_t func;
+	unsigned char** buf;
+public:
+	SPC_State_Copier( unsigned char** p, SPC_DSP::copy_func_t f ) { func = f; buf = p; }
+	void copy( void* state, size_t size );
+	int copy_int( int state, int size );
+	void skip( int count );
+	void extra();
+};
+
+#define SPC_COPY( type, state )\
+{\
+	state = (BOOST::type) copier.copy_int( state, sizeof (BOOST::type) );\
+}
 
 #define SPC_LESS_ACCURATE 1
 

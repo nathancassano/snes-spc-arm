@@ -77,21 +77,11 @@ public:
 	// Clears echo region. Useful after loading an SPC as many have garbage in echo.
 	void clear_echo();
 
-	// Plays for count samples and write samples to out. Discards samples if out
-	// is NULL. Count must be a multiple of 2 since output is stereo.
-	blargg_err_t play( int count, sample_t* out );
-	
-	// Skips count samples. Several times faster than play() when using fast DSP.
-	blargg_err_t skip( int count );
-	
-// State save/load (only available with accurate DSP)
-
-#if !SPC_NO_COPY_STATE_FUNCS
 	// Saves/loads state
 	enum { state_size = 67 * 1024L }; // maximum space needed when saving
 	typedef SPC_DSP::copy_func_t copy_func_t;
 	void copy_state( unsigned char** io, copy_func_t );
-	
+
 	// Writes minimal header to spc_out
 	static void init_header( void* spc_out );
 
@@ -102,13 +92,11 @@ public:
 	// Returns true if new key-on events occurred since last check. Useful for
 	// trimming silence while saving an SPC.
 	bool check_kon();
-#endif
 
-public:
 	BLARGG_DISABLE_NOTHROW
 	
 	typedef BOOST::uint16_t uint16_t;
-	
+
 	// Time relative to m_spc_time. Speeds up code a bit by eliminating need to
 	// constantly add m_spc_time to time from CPU. CPU uses time that ends at
 	// 0 to eliminate reloading end time every instruction. It pays off.
@@ -123,36 +111,34 @@ public:
 		int enabled;
 		int counter;
 	};
+
 	enum { reg_count = 0x10 };
 	enum { timer_count = 3 };
 	enum { extra_size = SPC_DSP::extra_size };
 	
 	enum { signature_size = 35 };
-	
-private:
-	SPC_DSP dsp;
-	
-	#if SPC_LESS_ACCURATE
-		static signed char const reg_times_ [256];
-		signed char reg_times [256];
-	#endif
-	
+
+public:
 	struct state_t
 	{
-		Timer timers [timer_count];
-		
-		uint8_t smp_regs [2] [reg_count];
-		
 		struct
 		{
-			int pc;
-			int a;
-			int x;
-			int y;
-			int psw;
-			int sp;
+			uint8_t x;
+			uint8_t psw;
+
+			uint8_t a;
+			uint8_t y;
+
+			uint8_t sp;
+			uint8_t padding;
+
+			uint16_t pc;
 		} cpu_regs;
-		
+
+		Timer timers [timer_count];
+	
+		uint8_t smp_regs [2] [reg_count];
+	
 		rel_time_t  dsp_time;
 		time_t      spc_time;
 		bool        echo_accessed;
@@ -169,24 +155,26 @@ private:
 		sample_t    extra_buf [extra_size];
 		
 		int         rom_enabled;
-		uint8_t     rom    [rom_size];
 		uint8_t     hi_ram [rom_size];
-		
-		unsigned char cycle_table [256];
-		
+		uint8_t     rom    [rom_size];
+
 		struct
 		{
-			// padding to neutralize address overflow
-			union {
-				uint8_t padding1 [0x100];
-				uint16_t align; // makes compiler align data for 16-bit access
-			} padding1 [1];
 			uint8_t ram      [0x10000];
-			uint8_t padding2 [0x100];
 		} ram;
+		
 	};
 	state_t m;
 	
+private:
+	SPC_DSP dsp;
+	
+	#if SPC_LESS_ACCURATE
+		static signed char const reg_times_ [256];
+		signed char reg_times [256];
+	#endif
+	
+
 	enum { rom_addr = 0xFFC0 };
 	
 	enum { skipping_time = 127 };
@@ -218,12 +206,6 @@ private:
 	Timer* run_timer       ( Timer* t, rel_time_t );
 	int dsp_read           ( rel_time_t );
 	void dsp_write         ( int data, rel_time_t );
-	void cpu_write_smp_reg_( int data, rel_time_t, int addr );
-	void cpu_write_smp_reg ( int data, rel_time_t, int addr );
-	void cpu_write_high    ( int data, int i, rel_time_t );
-	void cpu_write         ( int data, int addr, rel_time_t );
-	int cpu_read_smp_reg   ( int i, rel_time_t );
-	int cpu_read           ( int addr, rel_time_t );
 	unsigned CPU_mem_bit   ( uint8_t const* pc, rel_time_t );
 	
 	bool check_echo_access ( int addr );
@@ -252,28 +234,20 @@ private:
 	void save_regs( uint8_t out [reg_count] );
 };
 
-#include <assert.h>
-
 inline int SNES_SPC::sample_count() const { return (m.extra_clocks >> 5) * 2; }
 
 inline int SNES_SPC::read_port( time_t t, int port )
 {
-	assert( (unsigned) port < port_count );
 	return run_until_( t ) [port];
 }
 
 inline void SNES_SPC::write_port( time_t t, int port, int data )
 {
-	assert( (unsigned) port < port_count );
 	run_until_( t ) [0x10 + port] = data;
 }
 
 inline void SNES_SPC::mute_voices( int mask ) { dsp.mute_voices( mask ); }
 	
 inline void SNES_SPC::disable_surround( bool disable ) { dsp.disable_surround( disable ); }
-
-#if !SPC_NO_COPY_STATE_FUNCS
-inline bool SNES_SPC::check_kon() { return dsp.check_kon(); }
-#endif
 
 #endif

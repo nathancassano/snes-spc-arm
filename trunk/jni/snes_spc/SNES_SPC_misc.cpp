@@ -17,8 +17,6 @@ details. You should have received a copy of the GNU Lesser General Public
 License along with this module; if not, write to the Free Software Foundation,
 Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
 
-#include "blargg_source.h"
-
 #define RAM         (m.ram.ram)
 #define REGS        (m.smp_regs [0])
 #define REGS_IN     (m.smp_regs [1])
@@ -40,34 +38,6 @@ blargg_err_t SNES_SPC::init()
 	// on these two bytes
 	m.rom [0x3E] = 0xFF;
 	m.rom [0x3F] = 0xC0;
-	
-	static unsigned char const cycle_table [128] =
-	{//   01   23   45   67   89   AB   CD   EF
-	    0x28,0x47,0x34,0x36,0x26,0x54,0x54,0x68, // 0
-	    0x48,0x47,0x45,0x56,0x55,0x65,0x22,0x46, // 1
-	    0x28,0x47,0x34,0x36,0x26,0x54,0x54,0x74, // 2
-	    0x48,0x47,0x45,0x56,0x55,0x65,0x22,0x38, // 3
-	    0x28,0x47,0x34,0x36,0x26,0x44,0x54,0x66, // 4
-	    0x48,0x47,0x45,0x56,0x55,0x45,0x22,0x43, // 5
-	    0x28,0x47,0x34,0x36,0x26,0x44,0x54,0x75, // 6
-	    0x48,0x47,0x45,0x56,0x55,0x55,0x22,0x36, // 7
-	    0x28,0x47,0x34,0x36,0x26,0x54,0x52,0x45, // 8
-	    0x48,0x47,0x45,0x56,0x55,0x55,0x22,0xC5, // 9
-	    0x38,0x47,0x34,0x36,0x26,0x44,0x52,0x44, // A
-	    0x48,0x47,0x45,0x56,0x55,0x55,0x22,0x34, // B
-	    0x38,0x47,0x45,0x47,0x25,0x64,0x52,0x49, // C
-	    0x48,0x47,0x56,0x67,0x45,0x55,0x22,0x83, // D
-	    0x28,0x47,0x34,0x36,0x24,0x53,0x43,0x40, // E
-	    0x48,0x47,0x45,0x56,0x34,0x54,0x22,0x60, // F
-	};
-	
-	// unpack cycle table
-	for ( int i = 0; i < 128; i++ )
-	{
-		int n = cycle_table [i];
-		m.cycle_table [i * 2 + 0] = n >> 4;
-		m.cycle_table [i * 2 + 1] = n & 0x0F;
-	}
 	
 	#if SPC_LESS_ACCURATE
 		memcpy( reg_times, reg_times_, sizeof reg_times );
@@ -141,10 +111,6 @@ void SNES_SPC::ram_loaded()
 {
 	m.rom_enabled = 0;
 	load_regs( &RAM [0xF0] );
-	
-	// Put STOP instruction around memory to catch PC underflow/overflow
-	memset( m.ram.padding1, cpu_pad_fill, sizeof m.ram.padding1 );
-	memset( m.ram.padding2, cpu_pad_fill, sizeof m.ram.padding2 );
 }
 
 // Registers were just loaded. Applies these new values.
@@ -185,6 +151,8 @@ void SNES_SPC::reset_common( int timer_counter_init )
 	
 	// Run IPL ROM
 	memset( &m.cpu_regs, 0, sizeof m.cpu_regs );
+        m.cpu_regs.sp = 0xEF;
+        m.cpu_regs.psw = 0x2;
 	m.cpu_regs.pc = rom_addr;
 	
 	REGS [r_test   ] = 0x0A;
@@ -215,9 +183,6 @@ char const SNES_SPC::signature [signature_size + 1] =
 blargg_err_t SNES_SPC::load_spc( void const* data, long size )
 {
 	spc_file_t const* const spc = (spc_file_t const*) data;
-	
-	// be sure compiler didn't insert any padding into fle_t
-	assert( sizeof (spc_file_t) == spc_min_file_size + 0x80 );
 	
 	// Check signature and file size
 	if ( size < signature_size || memcmp( spc, signature, 27 ) )
@@ -276,8 +241,6 @@ void SNES_SPC::reset_buf()
 
 void SNES_SPC::set_output( sample_t* out, int size )
 {
-	require( (size & 1) == 0 ); // size must be even
-	
 	m.extra_clocks &= clocks_per_sample - 1;
 	if ( out )
 	{
@@ -300,7 +263,6 @@ void SNES_SPC::set_output( sample_t* out, int size )
 			// Copy any remaining extra samples as if DSP wrote them
 			while ( in < m.extra_pos )
 				*out++ = *in++;
-			assert( out <= out_end );
 		}
 		
 		dsp.set_output( out, out_end - out );
@@ -331,50 +293,5 @@ void SNES_SPC::save_extra()
 		*out++ = *in;
 	
 	m.extra_pos = out;
-	assert( out <= &m.extra_buf [extra_size] );
 }
 
-blargg_err_t SNES_SPC::play( int count, sample_t* out )
-{
-	require( (count & 1) == 0 ); // must be even
-	if ( count )
-	{
-		set_output( out, count );
-		end_frame( count * (clocks_per_sample / 2) );
-	}
-	
-	const char* err = m.cpu_error;
-	m.cpu_error = 0;
-	return err;
-}
-
-blargg_err_t SNES_SPC::skip( int count )
-{
-	#if SPC_LESS_ACCURATE
-	if ( count > 2 * sample_rate * 2 )
-	{
-		set_output( 0, 0 );
-		
-		// Skip a multiple of 4 samples
-		time_t end = count;
-		count = (count & 3) + 1 * sample_rate * 2;
-		end = (end - count) * (clocks_per_sample / 2);
-		
-		m.skipped_kon  = 0;
-		m.skipped_koff = 0;
-		
-		// Preserve DSP and timer synchronization
-		// TODO: verify that this really preserves it
-		int old_dsp_time = m.dsp_time + m.spc_time;
-		m.dsp_time = end - m.spc_time + skipping_time;
-		end_frame( end );
-		m.dsp_time = m.dsp_time - skipping_time + old_dsp_time;
-		
-		dsp.write( SPC_DSP::r_koff, m.skipped_koff & ~m.skipped_kon );
-		dsp.write( SPC_DSP::r_kon , m.skipped_kon );
-		clear_echo();
-	}
-	#endif
-	
-	return play( count, 0 );
-}
